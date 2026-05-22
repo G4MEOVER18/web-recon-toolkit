@@ -322,6 +322,7 @@ All tools by [G4MEOVER18](https://github.com/G4MEOVER18):
 If this tool saved you time on a pentest, consider buying me a coffee:
 
 **Bitcoin:** `39vZWmnUwDReQ15BwqQXzyqVQ6U8LardEf`
+**PayPal:** [paypal.me/Freakbank1](https://paypal.me/Freakbank1)
 
 ---
 
