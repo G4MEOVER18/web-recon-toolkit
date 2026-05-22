@@ -1,8 +1,8 @@
 # web-recon-toolkit
 
-> **Comprehensive Web Application Reconnaissance Toolkit for Penetration Testers**
+> **Umfassendes Web-Application-Reconnaissance-Toolkit für Penetrationstester**
 
-A modular, zero-dependency Python 3 tool for the initial reconnaissance phase of a web application pentest. Each module can be run independently or all together with `--all`. Results can be exported as JSON for integration into larger toolchains.
+Ein modulares Python-3-Tool ohne externe Abhängigkeiten für die initiale Recon-Phase eines Web-App-Pentests. Jedes Modul lässt sich einzeln oder mit `--all` zusammen ausführen. Ergebnisse können als JSON exportiert werden, um sie in größere Toolchains einzubinden.
 
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
@@ -17,21 +17,21 @@ Running reconnaissance scans against targets you do not own or have explicit wri
 
 ---
 
-## Inhaltsverzeichnis / Table of Contents
+## Inhaltsverzeichnis
 
 1. [Installation](#installation)
 2. [Quick Start](#quick-start)
-3. [Module Reference](#module-reference)
-   - [--tech — Technology Fingerprinting](#--tech--technology-fingerprinting)
+3. [Modulreferenz](#modulreferenz)
+   - [--tech — Technologie-Fingerprinting](#--tech--technologie-fingerprinting)
    - [--dirs — Directory Brute-force](#--dirs--directory-brute-force)
-   - [--emails — Email Harvesting](#--emails--email-harvesting)
-   - [--dns — DNS Enumeration](#--dns--dns-enumeration)
+   - [--emails — E-Mail-Harvesting](#--emails--e-mail-harvesting)
+   - [--dns — DNS-Enumeration](#--dns--dns-enumeration)
    - [--wayback — Wayback Machine](#--wayback--wayback-machine)
-4. [CLI Reference](#cli-reference)
-5. [Pentest Workflow](#pentest-workflow)
-6. [Output Formats](#output-formats)
-7. [Related Tools](#related-tools)
-8. [Donations](#donations)
+4. [CLI-Referenz](#cli-referenz)
+5. [Pentest-Workflow](#pentest-workflow)
+6. [Ausgabeformate](#ausgabeformate)
+7. [Verwandte Tools](#verwandte-tools)
+8. [Spenden](#spenden)
 
 ---
 
@@ -44,8 +44,8 @@ cd web-recon-toolkit
 python recon.py --help
 ```
 
-Requirements: **Python 3.8+**, standard library only.  
-On Windows, `nslookup` is available by default for DNS queries. On Linux/macOS, `dig` or `nslookup` is used.
+Voraussetzungen: **Python 3.8+**, nur die Standardbibliothek.  
+Unter Windows steht `nslookup` für DNS-Abfragen standardmäßig zur Verfügung. Unter Linux/macOS wird `dig` oder `nslookup` verwendet.
 
 ---
 
@@ -70,24 +70,24 @@ python recon.py example.com --dirs --wordlist /path/to/wordlist.txt
 
 ---
 
-## Module Reference
+## Modulreferenz
 
-### `--tech` — Technology Fingerprinting
+### `--tech` — Technologie-Fingerprinting
 
-Fetches the target page and HTTP headers, then identifies:
+Ruft die Zielseite und HTTP-Header ab und erkennt dabei:
 
-| Category | Detection Method |
+| Kategorie | Erkennungsmethode |
 |---|---|
-| Web Server | `Server:` HTTP header |
-| Backend | `X-Powered-By:` header |
-| CMS | Body patterns (wp-content, Joomla!, sites/all/modules, etc.) |
-| Generator | `<meta name="generator">` tag |
-| JS Frameworks | Script `src` attributes (React, Vue, Angular, jQuery, Next.js, etc.) |
-| CDN | Headers: `cf-ray`, `x-akamai-*`, `x-amz-cf-id`, `x-varnish`, etc. |
-| WAF | Headers: `x-sucuri-id`, `cf-ray`, `x-fw-*`, `x-iinfo`, etc. |
-| Security Headers | Checks for HSTS, CSP, X-Frame-Options, etc. |
+| Webserver | HTTP-Header `Server:` |
+| Backend | Header `X-Powered-By:` |
+| CMS | Body-Patterns (wp-content, Joomla!, sites/all/modules, etc.) |
+| Generator | `<meta name="generator">`-Tag |
+| JS Frameworks | Script-`src`-Attribute (React, Vue, Angular, jQuery, Next.js, etc.) |
+| CDN | Header: `cf-ray`, `x-akamai-*`, `x-amz-cf-id`, `x-varnish`, etc. |
+| WAF | Header: `x-sucuri-id`, `cf-ray`, `x-fw-*`, `x-iinfo`, etc. |
+| Security Headers | Prüft auf HSTS, CSP, X-Frame-Options, etc. |
 
-**Example output:**
+**Beispielausgabe:**
 
 ```
 [*] Technology Fingerprinting — https://example.com
@@ -109,19 +109,19 @@ Fetches the target page and HTTP headers, then identifies:
 
 ### `--dirs` — Directory Brute-force
 
-Sends concurrent HEAD requests to a built-in list of **100+ common paths** and reports anything other than 404. Uses `ThreadPoolExecutor` with configurable thread count (`--threads`).
+Schickt parallele HEAD-Requests an eine eingebaute Liste mit **über 100 gängigen Pfaden** und meldet alles, was nicht 404 zurückgibt. Verwendet `ThreadPoolExecutor` mit konfigurierbarer Thread-Anzahl (`--threads`).
 
-**Built-in paths include:**
-- Admin panels: `/admin`, `/wp-admin`, `/phpmyadmin`, `/console`, `/manager`
-- API endpoints: `/api`, `/api/v1`, `/swagger`, `/openapi.json`, `/graphql`
-- Sensitive files: `/.env`, `/.git/HEAD`, `/backup.zip`, `/db.sql`, `/web.config`
-- Config files: `/config.yml`, `/config.json`, `/.htaccess`, `/.htpasswd`
-- Info endpoints: `/server-status`, `/actuator/env`, `/phpinfo.php`
-- Security files: `/robots.txt`, `/security.txt`, `/.well-known/security.txt`
+**Enthaltene Pfade (Auswahl):**
+- Admin-Panels: `/admin`, `/wp-admin`, `/phpmyadmin`, `/console`, `/manager`
+- API-Endpunkte: `/api`, `/api/v1`, `/swagger`, `/openapi.json`, `/graphql`
+- Sensible Dateien: `/.env`, `/.git/HEAD`, `/backup.zip`, `/db.sql`, `/web.config`
+- Konfigurationsdateien: `/config.yml`, `/config.json`, `/.htaccess`, `/.htpasswd`
+- Info-Endpunkte: `/server-status`, `/actuator/env`, `/phpinfo.php`
+- Security-Dateien: `/robots.txt`, `/security.txt`, `/.well-known/security.txt`
 
-Reported HTTP codes: `200` (found), `301/302/307/308` (redirect), `403/401` (forbidden/auth required — indicates presence).
+Gemeldete HTTP-Codes: `200` (gefunden), `301/302/307/308` (Redirect), `403/401` (verboten/Authentifizierung nötig — deutet auf Vorhandensein hin).
 
-**Example output:**
+**Beispielausgabe:**
 
 ```
 [*] Directory Brute-force — https://example.com
@@ -133,15 +133,15 @@ Reported HTTP codes: `200` (found), `301/302/307/308` (redirect), `403/401` (for
   Found 4 interesting path(s).
 ```
 
-Provide an additional wordlist with `--wordlist /path/to/list.txt` (one path per line, `#` for comments).
+Eigene Wordlist mit `--wordlist /pfad/zur/liste.txt` hinzufügen (ein Pfad pro Zeile, `#` für Kommentare).
 
 ---
 
-### `--emails` — Email Harvesting
+### `--emails` — E-Mail-Harvesting
 
-Fetches multiple pages from the target (homepage, `/robots.txt`, `/sitemap.xml`, `/contact`, `/about`, `/impressum`) and extracts email addresses using a regex pattern. Also searches inside **HTML comments**, which sometimes contain developer or admin addresses.
+Ruft mehrere Seiten des Ziels ab (Startseite, `/robots.txt`, `/sitemap.xml`, `/contact`, `/about`, `/impressum`) und extrahiert E-Mail-Adressen per Regex. Durchsucht auch **HTML-Kommentare**, die manchmal Entwickler- oder Admin-Adressen enthalten.
 
-**Example output:**
+**Beispielausgabe:**
 
 ```
 [*] Email Harvesting — https://example.com
@@ -153,22 +153,22 @@ Fetches multiple pages from the target (homepage, `/robots.txt`, `/sitemap.xml`,
 
 ---
 
-### `--dns` — DNS Enumeration
+### `--dns` — DNS-Enumeration
 
-Resolves all common DNS record types for the target domain and checks email security configuration:
+Löst alle gängigen DNS-Record-Typen für die Zieldomain auf und prüft die E-Mail-Sicherheitskonfiguration:
 
-| Check | Details |
+| Prüfung | Details |
 |---|---|
-| A / AAAA | IPv4 and IPv6 addresses |
-| MX | Mail server records |
-| NS | Nameserver records |
-| TXT | All TXT records |
-| CNAME | Canonical name records |
-| SPF | Extracted from TXT records (`v=spf1`) |
-| DMARC | Queries `_dmarc.<domain>` |
-| DKIM | Queries `default._domainkey.<domain>` |
+| A / AAAA | IPv4- und IPv6-Adressen |
+| MX | Mailserver-Records |
+| NS | Nameserver-Records |
+| TXT | Alle TXT-Records |
+| CNAME | Canonical Name Records |
+| SPF | Aus TXT-Records extrahiert (`v=spf1`) |
+| DMARC | Abfrage von `_dmarc.<domain>` |
+| DKIM | Abfrage von `default._domainkey.<domain>` |
 
-**Example output:**
+**Beispielausgabe:**
 
 ```
 [*] DNS Enumeration — https://example.com
@@ -187,17 +187,17 @@ Resolves all common DNS record types for the target domain and checks email secu
 
 ### `--wayback` — Wayback Machine
 
-Queries the Internet Archive for historical snapshots:
+Fragt das Internet Archive nach historischen Snapshots ab:
 
-1. **Availability check** — finds the most recent snapshot timestamp and URL via `archive.org/wayback/available`
-2. **CDX index query** — fetches up to 20 recent archived URLs via the CDX API, showing timestamps and HTTP status codes at time of archival
+1. **Verfügbarkeitscheck** — findet den aktuellsten Snapshot-Zeitstempel und die URL über `archive.org/wayback/available`
+2. **CDX-Index-Abfrage** — holt bis zu 20 kürzlich archivierte URLs über die CDX API, inklusive Zeitstempel und HTTP-Statuscodes zum Zeitpunkt der Archivierung
 
-Useful for finding:
-- Old admin panels or hidden endpoints that no longer exist
-- Previously exposed sensitive files (`.env`, backups, etc.)
-- Historical API versions
+Nützlich, um zu finden:
+- Alte Admin-Panels oder versteckte Endpunkte, die nicht mehr existieren
+- Früher öffentlich zugängliche sensible Dateien (`.env`, Backups, etc.)
+- Ältere API-Versionen
 
-**Example output:**
+**Beispielausgabe:**
 
 ```
 [*] Wayback Machine — https://example.com
@@ -212,77 +212,77 @@ Useful for finding:
 
 ---
 
-## CLI Reference
+## CLI-Referenz
 
-| Flag | Type | Default | Description |
+| Flag | Typ | Standard | Beschreibung |
 |---|---|---|---|
-| `target` | positional | — | Target URL or hostname |
-| `--tech` | flag | — | Run technology fingerprinting module |
-| `--dirs` | flag | — | Run directory brute-force module |
-| `--emails` | flag | — | Run email harvesting module |
-| `--dns` | flag | — | Run DNS enumeration module |
-| `--wayback` | flag | — | Run Wayback Machine module |
-| `--all` | flag | — | Run all modules |
-| `--threads N` | int | `10` | Number of concurrent threads (for `--dirs`) |
-| `--timeout N` | int | `8` | HTTP request timeout in seconds |
-| `--user-agent STR` | str | Chrome UA | Custom User-Agent string |
-| `--wordlist FILE` | path | — | Extra directory wordlist (used with `--dirs`) |
-| `--json` | flag | — | Output results in JSON format |
-| `--out FILE` | path | — | Save results to file |
+| `target` | positional | — | Ziel-URL oder Hostname |
+| `--tech` | Flag | — | Technologie-Fingerprinting ausführen |
+| `--dirs` | Flag | — | Directory-Brute-force ausführen |
+| `--emails` | Flag | — | E-Mail-Harvesting ausführen |
+| `--dns` | Flag | — | DNS-Enumeration ausführen |
+| `--wayback` | Flag | — | Wayback-Machine-Modul ausführen |
+| `--all` | Flag | — | Alle Module ausführen |
+| `--threads N` | int | `10` | Anzahl paralleler Threads (für `--dirs`) |
+| `--timeout N` | int | `8` | HTTP-Request-Timeout in Sekunden |
+| `--user-agent STR` | str | Chrome UA | Eigener User-Agent-String |
+| `--wordlist FILE` | Pfad | — | Zusätzliche Wordlist für Directory-Scanning (mit `--dirs`) |
+| `--json` | Flag | — | Ausgabe im JSON-Format |
+| `--out FILE` | Pfad | — | Ergebnisse in Datei speichern |
 
 ---
 
-## Pentest Workflow
+## Pentest-Workflow
 
-A typical recon phase for a web application pentest:
+Ein typischer Recon-Ablauf für einen Web-App-Pentest:
 
 ```bash
-# Step 1 — Initial passive recon: DNS + Wayback before touching the server
+# Schritt 1 — Passiver Recon: DNS + Wayback, bevor der Server berührt wird
 python recon.py target.com --dns --wayback --json --out step1-passive.json
 
-# Step 2 — Active fingerprinting
+# Schritt 2 — Aktives Fingerprinting
 python recon.py target.com --tech --out step2-tech.txt
 
-# Step 3 — Directory discovery with a larger wordlist
+# Schritt 3 — Directory Discovery mit größerer Wordlist
 python recon.py target.com --dirs --threads 25 --wordlist ~/wordlists/raft-medium-directories.txt --out step3-dirs.txt
 
-# Step 4 — Email harvesting for OSINT / phishing sim
+# Schritt 4 — E-Mail-Harvesting für OSINT / Phishing-Simulation
 python recon.py target.com --emails
 
-# Step 5 — Full combined scan for report
+# Schritt 5 — Vollständiger kombinierter Scan für den Report
 python recon.py target.com --all --json --out final-report.json
 ```
 
-**Combine with related tools for deeper coverage:**
+**Mit verwandten Tools kombinieren für tiefere Abdeckung:**
 
 ```bash
-# Enumerate subdomains first
+# Erst Subdomains enumerieren
 python ~/tools/subdomain-takeover-scanner/scanner.py target.com
 
-# Then run web-recon-toolkit on each live subdomain
+# Dann web-recon-toolkit auf jede aktive Subdomain anwenden
 for sub in $(cat live-subs.txt); do
     python recon.py $sub --tech --dirs --out "$sub.txt"
 done
 
-# Check JWT tokens found in responses
+# JWT-Tokens aus Responses prüfen
 python ~/tools/jwt-pwn/jwt_pwn.py --token <token>
 
-# Audit HTTP security headers in detail
+# HTTP-Security-Header im Detail auditieren
 python ~/tools/http-header-auditor/auditor.py target.com
 
-# Test for CORS misconfigurations
+# Auf CORS-Fehlkonfigurationen testen
 python ~/tools/cors-scanner/cors_scan.py target.com
 ```
 
 ---
 
-## Output Formats
+## Ausgabeformate
 
-### Console (default)
-Coloured, human-readable output with ANSI colour codes.
+### Konsole (Standard)
+Farbige, menschenlesbare Ausgabe mit ANSI-Farbcodes.
 
 ### JSON (`--json`)
-Structured output suitable for scripting and reporting pipelines:
+Strukturierte Ausgabe für Scripting und Reporting-Pipelines:
 
 ```json
 {
@@ -293,8 +293,8 @@ Structured output suitable for scripting and reporting pipelines:
 }
 ```
 
-### File output (`--out`)
-Save any format to a file. Combine with `--json` for machine-readable output:
+### Dateiausgabe (`--out`)
+Jedes Format lässt sich in eine Datei speichern. Mit `--json` kombinieren für maschinenlesbare Ausgabe:
 
 ```bash
 python recon.py target.com --all --json --out report.json
@@ -303,27 +303,27 @@ python recon.py target.com --all --out report.txt   # plain text
 
 ---
 
-## Related Tools
+## Verwandte Tools
 
-All tools by [G4MEOVER18](https://github.com/G4MEOVER18):
+Alle Tools von [G4MEOVER18](https://github.com/G4MEOVER18):
 
-| Tool | Description |
+| Tool | Beschreibung |
 |---|---|
-| [subdomain-takeover-scanner](https://github.com/G4MEOVER18/subdomain-takeover-scanner) | Detect dangling DNS records and subdomain takeover vulnerabilities |
-| [jwt-pwn](https://github.com/G4MEOVER18/jwt-pwn) | JWT security testing: alg:none, RS256→HS256, weak secret brute-force |
-| [cors-scanner](https://github.com/G4MEOVER18/cors-scanner) | CORS misconfiguration detection |
-| [http-header-auditor](https://github.com/G4MEOVER18/http-header-auditor) | Comprehensive HTTP security header analysis |
-| [stm32-usb-fuzzer](https://github.com/G4MEOVER18/stm32-usb-fuzzer) | USB protocol fuzzing via STM32 microcontrollers |
+| [subdomain-takeover-scanner](https://github.com/G4MEOVER18/subdomain-takeover-scanner) | Erkennt verwaiste DNS-Records und Subdomain-Takeover-Schwachstellen |
+| [jwt-pwn](https://github.com/G4MEOVER18/jwt-pwn) | JWT-Sicherheitstests: alg:none, RS256→HS256, Brute-force schwacher Secrets |
+| [cors-scanner](https://github.com/G4MEOVER18/cors-scanner) | Erkennung von CORS-Fehlkonfigurationen |
+| [http-header-auditor](https://github.com/G4MEOVER18/http-header-auditor) | Umfassende Analyse von HTTP-Security-Headern |
+| [stm32-usb-fuzzer](https://github.com/G4MEOVER18/stm32-usb-fuzzer) | USB-Protokoll-Fuzzing über STM32-Mikrocontroller |
 
 ---
 
-## Donations
+## Spenden
 
-If this tool saved you time on a pentest, consider buying me a coffee:
+Falls dieses Tool dir bei einem Pentest Zeit gespart hat, freue ich mich über einen Kaffee:
 
 **Bitcoin:** `39vZWmnUwDReQ15BwqQXzyqVQ6U8LardEf`
 **PayPal:** [paypal.me/Freakbank1](https://paypal.me/Freakbank1)
 
 ---
 
-*Built with Python 3 stdlib only — no pip required.*
+*Nur mit Python-3-Standardbibliothek — kein pip nötig.*
