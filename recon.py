@@ -4,8 +4,11 @@ web-recon-toolkit — Comprehensive Web Application Reconnaissance Tool
 For penetration testers and security researchers.
 
 Usage:
-    python recon.py <target> [--tech] [--dirs] [--emails] [--dns] [--wayback] [--all]
+    python recon.py <target> [--tech] [--dirs] [--emails] [--dns] [--wayback]
+                             [--ssl] [--secrets] [--subdomains]
+                             [--all] [--modules M1,M2,...]
                              [--threads N] [--timeout N] [--user-agent STR]
+                             [--delay FLOAT] [--retry INT] [--proxy URL]
                              [--json] [--out FILE] [--wordlist FILE]
 
 Author  : G4MEOVER18
@@ -14,16 +17,19 @@ License : MIT
 
 import sys
 import re
+import ssl
 import json
 import socket
+import struct
 import argparse
 import threading
+import time
 import urllib.request
 import urllib.error
 import urllib.parse
 from html.parser import HTMLParser
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------
 # Colour helpers (no deps, pure ANSI)
@@ -63,28 +69,50 @@ DEFAULT_UA = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
-def http_get(url, timeout=8, ua=DEFAULT_UA, allow_redirects=True):
+# Global proxy opener — replaced by setup_proxy() if --proxy is given
+_OPENER = urllib.request.build_opener()
+
+def setup_proxy(proxy_url):
+    """Install a proxy for all subsequent http_get / http_head calls."""
+    global _OPENER
+    proxy_handler = urllib.request.ProxyHandler({
+        "http":  proxy_url,
+        "https": proxy_url,
+    })
+    _OPENER = urllib.request.build_opener(proxy_handler)
+
+def http_get(url, timeout=8, ua=DEFAULT_UA, allow_redirects=True, retry=1):
     """Perform a GET request. Returns (status_code, headers_dict, body_str) or raises."""
     req = urllib.request.Request(url, headers={"User-Agent": ua})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-            headers = dict(resp.headers)
-            return resp.status, headers, body
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace") if e.fp else ""
-        return e.code, dict(e.headers) if e.headers else {}, body
+    last_exc = None
+    for attempt in range(max(1, retry)):
+        try:
+            with _OPENER.open(req, timeout=timeout) as resp:
+                body = resp.read().decode("utf-8", errors="replace")
+                headers = dict(resp.headers)
+                return resp.status, headers, body
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+            return e.code, dict(e.headers) if e.headers else {}, body
+        except Exception as e:
+            last_exc = e
+            if attempt < retry - 1:
+                time.sleep(0.5)
+    raise last_exc
 
-def http_head(url, timeout=8, ua=DEFAULT_UA):
-    """Perform a HEAD request. Returns status_code or None on error."""
+def http_head(url, timeout=8, ua=DEFAULT_UA, retry=1):
+    """Perform a HEAD request. Returns (status_code, headers_dict) or (None, {})."""
     req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": ua})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, dict(resp.headers)
-    except urllib.error.HTTPError as e:
-        return e.code, dict(e.headers) if e.headers else {}
-    except Exception:
-        return None, {}
+    for attempt in range(max(1, retry)):
+        try:
+            with _OPENER.open(req, timeout=timeout) as resp:
+                return resp.status, dict(resp.headers)
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers) if e.headers else {}
+        except Exception:
+            if attempt < retry - 1:
+                time.sleep(0.5)
+    return None, {}
 
 def normalise_target(target):
     """Ensure target has a scheme."""
@@ -304,13 +332,16 @@ BUILTIN_PATHS = [
 INTERESTING_CODES = {200, 301, 302, 307, 308, 403, 401}
 
 
-def _probe_path(base, path, timeout, ua):
+def _probe_path(base, path, timeout, ua, delay=0.0, retry=1):
+    if delay > 0:
+        time.sleep(delay)
     url = base + path
-    code, headers = http_head(url, timeout=timeout, ua=ua)
+    code, headers = http_head(url, timeout=timeout, ua=ua, retry=retry)
     return path, code, headers, url
 
 
-def module_dirs(target, timeout, ua, report, threads=10, extra_wordlist=None):
+def module_dirs(target, timeout, ua, report, threads=10, extra_wordlist=None,
+                delay=0.0, retry=1):
     print(f"\n{BOLD}{CYAN}[*] Directory Brute-force — {target}{RESET}")
 
     paths = list(BUILTIN_PATHS)
@@ -335,7 +366,8 @@ def module_dirs(target, timeout, ua, report, threads=10, extra_wordlist=None):
     }
 
     def worker(path):
-        p, code, hdrs, url = _probe_path(target, path, timeout, ua)
+        p, code, hdrs, url = _probe_path(target, path, timeout, ua,
+                                          delay=delay, retry=retry)
         if code and code in INTERESTING_CODES:
             colour = code_colours.get(code, WHITE)
             redirect = hdrs.get("Location", "") if code in (301, 302, 307, 308) else ""
@@ -553,6 +585,460 @@ def module_wayback(target, timeout, ua, report):
 
 
 # ---------------------------------------------------------------------------
+# Module 6 — SSL/TLS Certificate Analysis
+# ---------------------------------------------------------------------------
+
+def _parse_x509_name(name_dict):
+    """Return a dict of RDN components from ssl peer cert name tuple-of-tuples."""
+    result = {}
+    for rdn in name_dict:
+        for key, value in rdn:
+            result[key] = value
+    return result
+
+def _get_cert_sans(cert):
+    """Extract Subject Alternative Names from ssl peer cert dict."""
+    sans = []
+    for ext_type, ext_values in cert.get("subjectAltName", []):
+        if ext_type == "DNS":
+            sans.append(ext_values)
+    return sans
+
+def _cert_date_to_dt(date_str):
+    """Convert ssl module's certificate date string to datetime (UTC)."""
+    # Format: 'May 15 12:00:00 2025 GMT'
+    try:
+        return datetime.strptime(date_str, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+def module_ssl(target, timeout, ua, report):
+    print(f"\n{BOLD}{CYAN}[*] SSL/TLS Certificate Analysis — {target}{RESET}")
+    hostname = extract_hostname(target)
+    findings = []
+    result = {"hostname": hostname}
+
+    try:
+        ctx = ssl.create_default_context()
+        # We want to inspect even if something is wrong → wrap with check_hostname=False
+        # but first try the proper way
+        conn = ctx.wrap_socket(
+            socket.create_connection((hostname, 443), timeout=timeout),
+            server_hostname=hostname,
+        )
+    except ssl.SSLCertVerificationError as e:
+        # Still try to get cert info with verification disabled
+        print(f"  {YELLOW}[!] SSL verification failed ({e.reason}), retrying without verification for inspection...{RESET}")
+        ctx_noverify = ssl.create_default_context()
+        ctx_noverify.check_hostname = False
+        ctx_noverify.verify_mode = ssl.CERT_NONE
+        try:
+            conn = ctx_noverify.wrap_socket(
+                socket.create_connection((hostname, 443), timeout=timeout),
+                server_hostname=hostname,
+            )
+            findings.append({"severity": "HIGH", "issue": f"SSL verification failed: {e.reason}"})
+        except Exception as e2:
+            print(f"  {RED}[!] Could not connect to port 443: {e2}{RESET}")
+            report.add("ssl", {"error": str(e2)})
+            return
+    except Exception as e:
+        print(f"  {RED}[!] Could not connect to port 443: {e}{RESET}")
+        report.add("ssl", {"error": str(e)})
+        return
+
+    try:
+        cert = conn.getpeercert()
+        tls_version = conn.version()
+        cipher_name, tls_proto, key_bits = conn.cipher()
+    finally:
+        conn.close()
+
+    # --- Subject
+    subject = _parse_x509_name(cert.get("subject", ()))
+    cn = subject.get("commonName", "(none)")
+    result["subject_cn"] = cn
+
+    # --- Issuer
+    issuer = _parse_x509_name(cert.get("issuer", ()))
+    issuer_cn = issuer.get("commonName", "(none)")
+    issuer_org = issuer.get("organizationName", "")
+    result["issuer_cn"] = issuer_cn
+    result["issuer_org"] = issuer_org
+
+    # --- SANs
+    sans = _get_cert_sans(cert)
+    result["sans"] = sans
+
+    # --- Validity
+    not_before_str = cert.get("notBefore", "")
+    not_after_str  = cert.get("notAfter", "")
+    not_before = _cert_date_to_dt(not_before_str)
+    not_after  = _cert_date_to_dt(not_after_str)
+    result["not_before"] = not_before_str
+    result["not_after"]  = not_after_str
+
+    now = datetime.now(timezone.utc)
+    if not_after:
+        days_left = (not_after - now).days
+        result["days_until_expiry"] = days_left
+        if days_left < 0:
+            findings.append({"severity": "HIGH",
+                             "issue": f"Certificate EXPIRED {abs(days_left)} day(s) ago"})
+        elif days_left <= 30:
+            findings.append({"severity": "MEDIUM",
+                             "issue": f"Certificate expires in {days_left} day(s)"})
+
+    # --- Self-signed check
+    is_self_signed = (subject == issuer)
+    result["self_signed"] = is_self_signed
+    if is_self_signed:
+        findings.append({"severity": "HIGH", "issue": "Self-signed certificate"})
+
+    # --- TLS version and cipher
+    result["tls_version"] = tls_version
+    result["cipher"] = cipher_name
+    result["cipher_bits"] = key_bits
+
+    # Weak TLS
+    if tls_version in ("TLSv1", "TLSv1.1", "SSLv3", "SSLv2"):
+        findings.append({"severity": "HIGH",
+                         "issue": f"Weak TLS version in use: {tls_version}"})
+
+    result["findings"] = findings
+
+    # --- Print
+    col = 24
+    print(f"  {BOLD}{'TLS Version':<{col}}{RESET} {GREEN if tls_version in ('TLSv1.2','TLSv1.3') else YELLOW}{tls_version}{RESET}")
+    print(f"  {BOLD}{'Cipher':<{col}}{RESET} {cipher_name} ({key_bits} bit)")
+    print(f"  {BOLD}{'Subject CN':<{col}}{RESET} {cn}")
+    print(f"  {BOLD}{'Issuer':<{col}}{RESET} {issuer_cn}{f' / {issuer_org}' if issuer_org else ''}")
+    print(f"  {BOLD}{'Valid From':<{col}}{RESET} {not_before_str}")
+
+    days_col = RED if not_after and days_left < 0 else (YELLOW if not_after and days_left <= 30 else GREEN)
+    print(f"  {BOLD}{'Valid Until':<{col}}{RESET} {c(not_after_str, days_col)}{f'  ({days_left}d left)' if not_after else ''}")
+
+    if is_self_signed:
+        print(f"  {BOLD}{'Self-Signed':<{col}}{RESET} {c('YES', RED)}")
+
+    if sans:
+        print(f"  {BOLD}SANs ({len(sans)}):{RESET}")
+        for san in sans:
+            print(f"    {CYAN}{san}{RESET}")
+    else:
+        print(f"  {BOLD}{'SANs':<{col}}{RESET} {GREY}(none){RESET}")
+
+    if findings:
+        print(f"\n  {BOLD}{YELLOW}Findings:{RESET}")
+        for f in findings:
+            sev_col = RED if f["severity"] == "HIGH" else YELLOW
+            print(f"    [{c(f['severity'], sev_col)}] {f['issue']}")
+    else:
+        print(f"\n  {GREEN}No certificate issues detected.{RESET}")
+
+    report.add("ssl", result)
+
+
+# ---------------------------------------------------------------------------
+# Module 7 — Secret / Credential Detection
+# ---------------------------------------------------------------------------
+
+# (key_label, compiled_regex, description)
+_SECRET_PATTERNS = [
+    ("AWS Access Key",
+     re.compile(r"AKIA[0-9A-Z]{16}"),
+     "AWS IAM access key"),
+    ("GitHub Token (ghp_)",
+     re.compile(r"ghp_[a-zA-Z0-9]{36}"),
+     "GitHub personal access token"),
+    ("GitHub Token (github_pat_)",
+     re.compile(r"github_pat_[a-zA-Z0-9_]{82}"),
+     "GitHub fine-grained PAT"),
+    ("API Key / Token",
+     re.compile(r"(?:api[_\-]?key|apikey|token|secret)\s*[=:\"'`]\s*([a-zA-Z0-9_\-]{32,})",
+                re.IGNORECASE),
+     "Generic API key or token"),
+    ("Private Key Header",
+     re.compile(r"-----BEGIN (?:RSA |EC )?PRIVATE KEY-----"),
+     "PEM private key block"),
+    ("DB Connection String",
+     re.compile(r"(?:mysql|postgresql|mongodb)://[^:@\s]+:[^@\s]+@[^\s\"'<>]+",
+                re.IGNORECASE),
+     "Database connection string with credentials"),
+    ("Basic Auth in URL",
+     re.compile(r"https?://[^:@\s/]+:[^@\s/]+@[^\s\"'<>]+"),
+     "HTTP Basic auth credentials embedded in URL"),
+]
+
+class _ScriptSrcParser(HTMLParser):
+    """Collect absolute and relative script src URLs from HTML."""
+    def __init__(self):
+        super().__init__()
+        self.srcs = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script":
+            for name, val in attrs:
+                if name == "src" and val:
+                    self.srcs.append(val)
+
+def _absolute_url(base, href):
+    return urllib.parse.urljoin(base, href)
+
+def _scan_for_secrets(content, source_label):
+    """Scan text content for secrets. Returns list of finding dicts."""
+    found = []
+    for name, pattern, desc in _SECRET_PATTERNS:
+        for m in pattern.finditer(content):
+            snippet = m.group(0)[:60].replace("\n", " ")
+            found.append({
+                "type": name,
+                "description": desc,
+                "source": source_label,
+                "snippet": snippet,
+            })
+    return found
+
+def module_secrets(target, timeout, ua, report):
+    print(f"\n{BOLD}{CYAN}[*] Secret / Credential Detection — {target}{RESET}")
+    all_findings = []
+
+    # --- Pages to always check
+    urls_to_scan = [
+        (target,              "homepage"),
+        (target + "/robots.txt", "robots.txt"),
+        (target + "/api",     "/api"),
+        (target + "/config",  "/config"),
+    ]
+
+    # --- Fetch homepage to find JS files
+    js_urls_found = []
+    try:
+        _, _, homepage_body = http_get(target, timeout=timeout, ua=ua)
+        parser = _ScriptSrcParser()
+        parser.feed(homepage_body)
+        js_srcs = []
+        for src in parser.srcs:
+            abs_src = _absolute_url(target, src)
+            # Only include JS on the same host or relative paths
+            parsed_src = urllib.parse.urlparse(abs_src)
+            parsed_tgt = urllib.parse.urlparse(target)
+            if parsed_src.hostname == parsed_tgt.hostname and abs_src.endswith(".js"):
+                js_srcs.append(abs_src)
+        js_urls_found = js_srcs[:3]  # max 3
+    except Exception:
+        pass
+
+    for js_url in js_urls_found:
+        urls_to_scan.append((js_url, f"JS:{js_url.split('/')[-1]}"))
+
+    # --- Scan each URL
+    for url, label in urls_to_scan:
+        try:
+            status, _, body = http_get(url, timeout=timeout, ua=ua)
+            if status and status < 400 and body:
+                hits = _scan_for_secrets(body, label)
+                all_findings.extend(hits)
+                if hits:
+                    print(f"  {YELLOW}[{label}] {len(hits)} finding(s){RESET}")
+                else:
+                    print(f"  {GREY}[{label}] {status} — clean{RESET}")
+            else:
+                print(f"  {GREY}[{label}] {status} — skipped{RESET}")
+        except Exception as e:
+            print(f"  {GREY}[{label}] error: {e}{RESET}")
+
+    # --- Print findings
+    if all_findings:
+        print(f"\n  {RED}{BOLD}[!] {len(all_findings)} potential secret(s) found:{RESET}")
+        for finding in all_findings:
+            sev_col = RED
+            print(f"    {c('[' + finding['type'] + ']', sev_col)}")
+            print(f"      Source  : {finding['source']}")
+            print(f"      Snippet : {finding['snippet']}")
+    else:
+        print(f"\n  {GREEN}No secrets detected in scanned resources.{RESET}")
+
+    report.add("secrets", all_findings)
+
+
+# ---------------------------------------------------------------------------
+# Module 8 — Subdomain Enumeration
+# ---------------------------------------------------------------------------
+
+_COMMON_SUBDOMAINS = [
+    "www", "api", "mail", "smtp", "ftp", "admin", "dev", "staging", "test",
+    "beta", "app", "mobile", "cdn", "static", "assets", "media", "img",
+    "login", "auth", "sso", "vpn", "remote", "gateway", "proxy", "backend",
+    "dashboard", "panel", "portal", "status", "monitor", "metrics", "docs",
+    "wiki", "git", "gitlab", "jenkins", "jira", "confluence", "pop3", "imap",
+    "ns1", "ns2", "ns3", "mx", "webmail", "shop", "store", "blog", "forum",
+    "support", "help", "cdn2", "s3", "files", "download", "smtp2",
+]
+
+def _dns_axfr(ns_host, domain, timeout=5):
+    """
+    Attempt a DNS zone transfer (AXFR) against ns_host for domain.
+    Uses raw socket to send a minimal AXFR query (RFC 5936).
+    Returns list of discovered names (may be empty on refusal).
+    """
+    results = []
+    try:
+        # Build minimal DNS AXFR request
+        # Header: ID=0x1337, QR=0, OPCODE=0, QDCOUNT=1
+        tid = 0x1337
+        flags = 0x0000
+        qdcount = 1
+        ancount = arcount = nscount = 0
+        header = struct.pack(">HHHHHH", tid, flags, qdcount, ancount, nscount, arcount)
+
+        # Question: <domain> QTYPE=252 (AXFR) QCLASS=1 (IN)
+        qname = b""
+        for label in domain.split("."):
+            enc = label.encode()
+            qname += bytes([len(enc)]) + enc
+        qname += b"\x00"
+        question = qname + struct.pack(">HH", 252, 1)  # AXFR, IN
+
+        payload = header + question
+        # DNS over TCP: 2-byte length prefix
+        tcp_msg = struct.pack(">H", len(payload)) + payload
+
+        with socket.create_connection((ns_host, 53), timeout=timeout) as sock:
+            sock.sendall(tcp_msg)
+            # Read responses (may come in multiple messages)
+            raw = b""
+            for _ in range(20):  # read up to 20 chunks
+                try:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    raw += chunk
+                except Exception:
+                    break
+
+        # Parse names from the raw response — look for label sequences
+        # We scan for printable ASCII domain name patterns rather than
+        # full DNS parsing to stay stdlib-only.
+        name_re = re.compile(rb"[\x01-\x3f]([\w\-]+)")
+        for m in name_re.finditer(raw):
+            label = m.group(1).decode("ascii", errors="ignore")
+            if label and len(label) > 1:
+                candidate = f"{label}.{domain}"
+                if candidate not in results:
+                    results.append(candidate)
+    except Exception:
+        pass
+    return results
+
+def module_subdomains(target, timeout, ua, report):
+    print(f"\n{BOLD}{CYAN}[*] Subdomain Enumeration — {target}{RESET}")
+    hostname = extract_hostname(target)
+
+    # Strip leading www. to get base domain
+    base_domain = hostname
+    if base_domain.startswith("www."):
+        base_domain = base_domain[4:]
+
+    # Resolve main domain IP for comparison
+    main_ips = set()
+    try:
+        main_ips = {info[4][0] for info in socket.getaddrinfo(hostname, None, socket.AF_INET)}
+    except Exception:
+        pass
+
+    found_subs = []
+    lock = threading.Lock()
+
+    def check_subdomain(sub):
+        fqdn = f"{sub}.{base_domain}"
+        try:
+            _, _, ips_info = socket.gethostbyname_ex(fqdn)
+            resolved_ips = set(ips_info) if ips_info else set()
+            # gethostbyname_ex returns (hostname, aliases, ipaddrlist)
+            # but signature is (name, aliaslist, addresslist)
+        except Exception:
+            return
+
+        if not resolved_ips:
+            return
+
+        is_different_ip = bool(resolved_ips - main_ips) if main_ips else False
+        entry = {
+            "subdomain": fqdn,
+            "ips": list(resolved_ips),
+            "different_ip": is_different_ip,
+        }
+        with lock:
+            found_subs.append(entry)
+            diff_tag = c(" [different IP]", YELLOW) if is_different_ip else ""
+            ips_str = ", ".join(sorted(resolved_ips))
+            print(f"  {GREEN}{fqdn:<45}{RESET} {GREY}{ips_str}{RESET}{diff_tag}")
+
+    # Fix: gethostbyname_ex returns (hostname, aliaslist, addresslist)
+    def check_subdomain_fixed(sub):
+        fqdn = f"{sub}.{base_domain}"
+        try:
+            name, aliases, addresslist = socket.gethostbyname_ex(fqdn)
+            resolved_ips = set(addresslist)
+        except Exception:
+            return
+
+        if not resolved_ips:
+            return
+
+        is_different_ip = bool(resolved_ips - main_ips) if main_ips else False
+        entry = {
+            "subdomain": fqdn,
+            "ips": list(resolved_ips),
+            "different_ip": is_different_ip,
+        }
+        with lock:
+            found_subs.append(entry)
+            diff_tag = c(" [different IP]", YELLOW) if is_different_ip else ""
+            ips_str = ", ".join(sorted(resolved_ips))
+            print(f"  {GREEN}{fqdn:<45}{RESET} {GREY}{ips_str}{RESET}{diff_tag}")
+
+    print(f"  {GREY}Testing {len(_COMMON_SUBDOMAINS)} common subdomains...{RESET}")
+    with ThreadPoolExecutor(max_workers=20) as ex:
+        futures = [ex.submit(check_subdomain_fixed, sub) for sub in _COMMON_SUBDOMAINS]
+        for f in as_completed(futures):
+            pass
+
+    # --- DNS Zone Transfer attempt
+    print(f"\n  {GREY}Attempting DNS zone transfer (AXFR) on NS servers...{RESET}")
+    ns_records = _dns_query(base_domain, "NS")
+    axfr_results = []
+    for ns in ns_records:
+        ns_clean = ns.rstrip(".").strip()
+        # Strip nslookup noise like "nameserver = " prefixes
+        if "=" in ns_clean:
+            ns_clean = ns_clean.split("=")[-1].strip()
+        if not ns_clean or " " in ns_clean:
+            continue
+        print(f"  {GREY}  AXFR → {ns_clean} ...{RESET}", end=" ", flush=True)
+        axfr_names = _dns_axfr(ns_clean, base_domain, timeout=timeout)
+        if axfr_names:
+            print(f"{RED}POSSIBLE LEAK ({len(axfr_names)} names){RESET}")
+            for name in axfr_names[:20]:
+                print(f"    {CYAN}{name}{RESET}")
+            axfr_results.extend(axfr_names)
+        else:
+            print(f"{GREEN}refused/empty{RESET}")
+
+    if found_subs:
+        print(f"\n  {GREEN}Found {len(found_subs)} live subdomain(s).{RESET}")
+    else:
+        print(f"\n  {GREY}No subdomains resolved.{RESET}")
+
+    report.add("subdomains", {
+        "base_domain": base_domain,
+        "found": found_subs,
+        "axfr_names": axfr_results,
+    })
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -564,31 +1050,50 @@ def parse_args():
         epilog="""
 Examples:
   python recon.py example.com --all
-  python recon.py https://example.com --tech --dns
+  python recon.py https://example.com --tech --dns --ssl
   python recon.py example.com --dirs --threads 20 --timeout 5
   python recon.py example.com --all --json --out results.json
   python recon.py example.com --dirs --wordlist /path/to/wordlist.txt
+  python recon.py example.com --modules ssl,secrets,subdomains
+  python recon.py example.com --all --proxy http://127.0.0.1:8080
+  python recon.py example.com --dirs --delay 0.5 --retry 3
         """,
     )
     p.add_argument("target", help="Target URL or hostname")
-    p.add_argument("--tech",     action="store_true", help="Technology fingerprinting")
-    p.add_argument("--dirs",     action="store_true", help="Directory brute-force")
-    p.add_argument("--emails",   action="store_true", help="Email harvesting")
-    p.add_argument("--dns",      action="store_true", help="DNS enumeration")
-    p.add_argument("--wayback",  action="store_true", help="Wayback Machine lookup")
-    p.add_argument("--all",      action="store_true", help="Run all modules")
-    p.add_argument("--threads",  type=int, default=10, metavar="N",  help="Concurrent threads (default: 10)")
-    p.add_argument("--timeout",  type=int, default=8,  metavar="N",  help="HTTP timeout seconds (default: 8)")
+    p.add_argument("--tech",       action="store_true", help="Technology fingerprinting")
+    p.add_argument("--dirs",       action="store_true", help="Directory brute-force")
+    p.add_argument("--emails",     action="store_true", help="Email harvesting")
+    p.add_argument("--dns",        action="store_true", help="DNS enumeration")
+    p.add_argument("--wayback",    action="store_true", help="Wayback Machine lookup")
+    p.add_argument("--ssl",        action="store_true", help="SSL/TLS certificate analysis")
+    p.add_argument("--secrets",    action="store_true", help="Secret/credential detection")
+    p.add_argument("--subdomains", action="store_true", help="Subdomain enumeration")
+    p.add_argument("--all",        action="store_true", help="Run all modules")
+    p.add_argument("--modules",    metavar="M1,M2,...",
+                   help="Comma-separated module list: tech,dirs,emails,dns,wayback,ssl,secrets,subdomains")
+    p.add_argument("--threads",    type=int, default=10, metavar="N",  help="Concurrent threads (default: 10)")
+    p.add_argument("--timeout",    type=int, default=8,  metavar="N",  help="HTTP timeout seconds (default: 8)")
     p.add_argument("--user-agent", default=DEFAULT_UA, metavar="STR", help="Custom User-Agent string")
-    p.add_argument("--json",     action="store_true", help="Output results as JSON")
-    p.add_argument("--out",      metavar="FILE",  help="Save output to file")
-    p.add_argument("--wordlist", metavar="FILE",  help="Extra directory wordlist")
+    p.add_argument("--delay",      type=float, default=0.0, metavar="FLOAT",
+                   help="Delay in seconds between requests in --dirs (default: 0)")
+    p.add_argument("--retry",      type=int, default=1, metavar="INT",
+                   help="Number of retries on timeout (default: 1)")
+    p.add_argument("--proxy",      metavar="URL",
+                   help="Proxy URL, e.g. http://127.0.0.1:8080")
+    p.add_argument("--json",       action="store_true", help="Output results as JSON")
+    p.add_argument("--out",        metavar="FILE",  help="Save output to file")
+    p.add_argument("--wordlist",   metavar="FILE",  help="Extra directory wordlist")
     return p.parse_args()
 
 
 def main():
     banner()
     args = parse_args()
+
+    # --- Proxy setup (must happen before any requests)
+    if args.proxy:
+        setup_proxy(args.proxy)
+        print(f"  {YELLOW}[*] Proxy: {args.proxy}{RESET}")
 
     target = normalise_target(args.target)
     report = Report()
@@ -603,33 +1108,59 @@ def main():
     run_all = args.all
     ua = args.user_agent
 
+    # --- Resolve --modules flag into individual booleans
+    selected_modules = set()
+    if args.modules:
+        for m in args.modules.split(","):
+            selected_modules.add(m.strip().lower())
+
+    def want(name):
+        return run_all or getattr(args, name, False) or name in selected_modules
+
     print(f"  {BOLD}Target  :{RESET} {CYAN}{target}{RESET}")
     print(f"  {BOLD}Threads :{RESET} {args.threads}")
     print(f"  {BOLD}Timeout :{RESET} {args.timeout}s")
+    if args.delay > 0:
+        print(f"  {BOLD}Delay   :{RESET} {args.delay}s between requests")
+    if args.retry > 1:
+        print(f"  {BOLD}Retry   :{RESET} {args.retry} attempts on timeout")
     print(f"  {BOLD}Started :{RESET} {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
-    if run_all or args.tech:
+    if want("tech"):
         module_tech(target, args.timeout, ua, report)
         report.sections["meta"][0]["modules"].append("tech")
 
-    if run_all or args.dns:
+    if want("dns"):
         module_dns(target, args.timeout, ua, report)
         report.sections["meta"][0]["modules"].append("dns")
 
-    if run_all or args.emails:
+    if want("ssl"):
+        module_ssl(target, args.timeout, ua, report)
+        report.sections["meta"][0]["modules"].append("ssl")
+
+    if want("emails"):
         module_emails(target, args.timeout, ua, report)
         report.sections["meta"][0]["modules"].append("emails")
 
-    if run_all or args.dirs:
+    if want("secrets"):
+        module_secrets(target, args.timeout, ua, report)
+        report.sections["meta"][0]["modules"].append("secrets")
+
+    if want("subdomains"):
+        module_subdomains(target, args.timeout, ua, report)
+        report.sections["meta"][0]["modules"].append("subdomains")
+
+    if want("dirs"):
         module_dirs(target, args.timeout, ua, report,
-                    threads=args.threads, extra_wordlist=args.wordlist)
+                    threads=args.threads, extra_wordlist=args.wordlist,
+                    delay=args.delay, retry=args.retry)
         report.sections["meta"][0]["modules"].append("dirs")
 
-    if run_all or args.wayback:
+    if want("wayback"):
         module_wayback(target, args.timeout, ua, report)
         report.sections["meta"][0]["modules"].append("wayback")
 
-    if not any([run_all, args.tech, args.dirs, args.emails, args.dns, args.wayback]):
+    if not report.sections["meta"][0]["modules"]:
         print(f"\n  {YELLOW}[!] No module selected. Use --all or specify a module.{RESET}")
         print(f"  {GREY}    Run `python recon.py --help` for usage.{RESET}\n")
         sys.exit(0)
