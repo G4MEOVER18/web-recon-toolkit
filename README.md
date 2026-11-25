@@ -1,5 +1,7 @@
 # web-recon-toolkit
 
+[![CI](https://github.com/G4MEOVER18/web-recon-toolkit/actions/workflows/python-lint.yml/badge.svg)](https://github.com/G4MEOVER18/web-recon-toolkit/actions/workflows/python-lint.yml)
+
 > **Umfassendes Web-Application-Reconnaissance-Toolkit für Penetrationstester**
 
 Ein modulares Python-3-Tool ohne externe Abhängigkeiten für die initiale Recon-Phase eines Web-App-Pentests. Jedes Modul lässt sich einzeln oder mit `--all` zusammen ausführen. Ergebnisse können als JSON exportiert werden, um sie in größere Toolchains einzubinden.
